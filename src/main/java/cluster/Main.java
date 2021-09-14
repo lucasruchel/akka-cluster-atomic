@@ -2,6 +2,7 @@ package cluster;
 
 import java.util.Arrays;
 
+import akka.actor.typed.ActorRef;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 
@@ -11,11 +12,15 @@ import akka.actor.typed.Terminated;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
 import akka.management.javadsl.AkkaManagement;
+import messages.Message;
 
 class Main {
-  static Behavior<Void> create() {
+
+  int id;
+  
+  static Behavior<Void> create(int id) {
     return Behaviors.setup(context -> {
-      bootstrap(context);
+      bootstrap(context, id);
 
       return Behaviors.receive(Void.class)
         .onSignal(Terminated.class, signal -> Behaviors.stopped())
@@ -23,20 +28,20 @@ class Main {
     });
   }
 
-  private static void bootstrap(final ActorContext<Void> context) {
+  private static void bootstrap(final ActorContext<Void> context, int id) {
     context.spawn(ClusterListenerActor.create(), "clusterListener");
 
-    final var httpServerActorRef = context.spawn(HttpServerActor.create(), HttpServerActor.class.getSimpleName());
-
-    context.spawn(ClusterAwareActor.create(httpServerActorRef), ClusterAwareActor.class.getSimpleName());
+    ActorRef<Message> clientRef = context.spawn(ClientActor.create(), "client");
+    context.spawn(BroadcastActor.create(clientRef), BroadcastActor.class.getSimpleName());
   }
 
   public static void main(String[] args) {
     if (args.length == 0) {
-      throw new RuntimeException("Akka node port is required.");
+      throw new RuntimeException("Akka node port and ID is required.");
     }
     final var port = Arrays.asList(args).get(0);
-    final var actorSystem = ActorSystem.create(cluster.Main.create(), "cluster", setupClusterNodeConfig(port));
+    final var id =  Integer.parseInt(Arrays.asList(args).get(1));
+    final var actorSystem = ActorSystem.create(cluster.Main.create(id), "cluster", setupClusterNodeConfig(port));
     AkkaManagement.get(actorSystem).start();
   }
 

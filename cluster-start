@@ -18,7 +18,7 @@ startNodes() {
   for i in $(seq "$1") ; do startNode "$i" ; done
 }
 
-[[ $# = 0 ]] && nodes=9 || nodes=$1
+[[ $# = 0 ]] && nodes=8 || nodes=$1
 
 if [[ $nodes =~ ^[1-9]$ ]] ; then
   echo -n "Starting $nodes cluster node" ; if [[ $nodes -gt 1 ]] ; then echo "s" ; else echo "" ; fi

@@ -31,7 +31,13 @@ startNode() {
   port="255"$node
   export akka_management_http_port="855"$node
   echo "Start node $1 on port $port, management port $akka_management_http_port, HTTP port 955$node"
-  java -jar "$jarFilename" "$port" &> /tmp/"$scriptFilename"-"$node".log &
+
+  DEBUG=""
+  if [ $node -eq 1 ]; then
+    DEBUG="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5001"
+  fi
+
+  java $DEBUG -jar "$jarFilename" "$port" "$1"  &> /tmp/"$scriptFilename"-"$node".log &
 }
 
 [ $# -eq 0 ] && usage
