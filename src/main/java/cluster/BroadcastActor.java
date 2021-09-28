@@ -1,17 +1,24 @@
 package cluster;
 
+import akka.actor.Address;
 import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.*;
 import akka.actor.typed.receptionist.Receptionist;
 import akka.actor.typed.receptionist.ServiceKey;
 
+import akka.cluster.ClusterEvent;
+import akka.cluster.Member;
+import akka.cluster.typed.Cluster;
+import akka.cluster.typed.Subscribe;
+import akka.cluster.typed.Subscribe$;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
 import messages.*;
 import data.Timestamp;
 import org.slf4j.Logger;
 import topologia.VCubeTopology;
+import utils.AddressComparator;
 import utils.IPUtils;
 
 import java.util.*;
@@ -42,21 +49,24 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   //    timestamp utilizado para ordem total
   private int ts;
 
+  private Cluster cluster;
+
+
   private VCubeTopology topo;
 
   static final ServiceKey<Message> serviceKey = ServiceKey.create(Message.class, BroadcastActor.class.getSimpleName());
-  private int me;
+  public static int me;
 
 //  Controla a quantidade de replicas prontas para iniciar a replicação
   private Set<ActorRef> n_ready;
 
   private ActorRef<Message> clientRef;
 
+
   static Behavior<Message> create(ActorRef<Message> actorRef) {
-    return Behaviors.setup(context ->
-            new BroadcastActor(context, actorRef)
-    );
+    return Behaviors.setup(context -> new BroadcastActor(context, actorRef));
   }
+
 
   private BroadcastActor(ActorContext<Message> context, ActorRef<Message> actorRef) {
     super(context);
@@ -80,25 +90,116 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     topo = new VCubeTopology(NUM_PROCESS);
     topo.setCorrects(corretos);
 
+//    Inicializa detector de falhas
+    getContext().spawn(ClusterEventListener.create(getSelf()),"failure-listener");
 
+
+    cluster = Cluster.get(context.getSystem());
     receptionistRegisterSubscribe(context);
-  }
+              cluster.subscriptions()
+              .tell(Subscribe.create(getSelf(), ClusterEvent.MemberEvent.class));
+    }
+
+
 
   @Override
-  public Receive<Message> createReceive() {
+  public Receive createReceive() {
+
     return newReceiveBuilder()
         .onMessage(Listeners.class, this::onListeners)
         .onMessage(ABCast.class, this::broadcast)
         .onMessage(TreeMessage.class, this::receiveTree)
         .onMessage(ClusterInfoMessage.class, this::callClient)
         .onMessage(ACKPending.class, this::receiveACk)
+        .onMessage(ReachabilityChanged.class, this::statusChange)
         .build();
   }
 
+  private void notifyFailure(){
 
+  }
+
+  private Behavior<Message> statusChange(ReachabilityChanged event){
+
+    var unreachableMembers = cluster.state().getUnreachable();
+
+    unreachableMembers.forEach(member -> {
+      corretos.inverse().forEach((actor, id) -> {
+        if (actor.path().address().equals(member.address())){
+          onFailure(id);
+        }
+      });
+    });
+    return Behaviors.same();
+  }
+
+  private void onFailure(int p){
+
+    log().debug("{}: Tratando falha de {}",me,p);
+
+//    Remove processo falho da lista de processos corretos se estiver presente
+    if (corretos.containsKey(p)){
+      corretos.remove(p);
+    }
+
+//    Verifica se o processo atual não é considerado como falho
+    Address meAddr = getSelf().path().address();
+    Cluster clusterInfo = Cluster.get(getContext().getSystem());
+
+//    Verifica se o processo atual está na lista de processos inalcançaveis
+    if (clusterInfo.state().getUnreachable().contains(meAddr))
+      return;
+
+//    Remove timestamp do processo falho do conjunto de mensagens recebidas que ainda estão aguardando para serem entreegues
+    received.forEach((data, timestamps) -> {
+      AtomicReference<Timestamp> atomicTs = new AtomicReference<>();
+      timestamps.forEach(ts -> {
+        if (ts.getId() == p)
+          atomicTs.set(ts);
+      });
+      if (atomicTs.get() != null)
+        timestamps.remove(atomicTs.get());
+    });
+
+    // Verifica para cada mensagem tree propagada, se os processos de destino correspondem ao processo suspeito
+    pendingAck.forEach((tree, acks) -> {
+      acks.forEach((dest, src) -> {
+        if (dest == p && corretos.containsKey(src)){ // Se houver um ack do processo suspeito e o processo de origem estiver correto
+          int nextNeighboor = topo.ff_neighboor(me,topo.cluster(me,p));
+          if (nextNeighboor != -1) { // verifica se existem processos na árvore
+
+            //                     Nova mensagem a ser enviada, mesmo ts e dados recebidos ao próximo processo
+
+            addAck(src,nextNeighboor,tree); // adiciona a nova mensagem como pendente
+
+            send(corretos.get(nextNeighboor), tree);
+          }
+          acks.remove(dest,src);
+          checkAcks(src,tree);
+        } else if ( dest == p){
+          acks.remove(dest,src);
+
+          int nextNeighboor = topo.ff_neighboor(me,topo.cluster(me,p));
+          if (nextNeighboor != -1) { // verifica se existem processos na árvore
+
+            //                     Nova mensagem a ser enviada, mesmo ts e dados recebidos ao próximo processo
+            addAck(src,nextNeighboor,tree); // adiciona a nova mensagem como pendente
+
+            send(corretos.get(nextNeighboor), tree);
+          }
+        }
+      });
+//                 limpa entradas vazias em pendingAcks
+      if (acks.isEmpty()) {
+        pendingAck.remove(tree,acks);
+      }
+    });
+//          Verifica se mensagens podem ser entregues, independente se houver ACks pendentes
+    received.forEach((abMsg, timestamps) -> checkDeliverable(abMsg));
+  }
 
   private Behavior<Message> receiveTree(TreeMessage tree){
-    log().info("TREE recebido!!");
+    log().debug("TREE recebido!!");
 
     ActorRef<Message> src = tree.replyTo;
 
@@ -115,7 +216,6 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     if (data.getSeq() > last_i.get(data.getSrc()) &&
             !received.containsKey(data) && !stamped.containsKey(data)){
 
-
 //           Local timestamp
       Timestamp timestamp = new Timestamp(me,ts);
       tsaggr.add(timestamp);
@@ -123,7 +223,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
       List<Integer> neighbors = topo.neighborhood(me,topo.log2(NUM_PROCESS));
       List<Integer> subtree = topo.neighborhood(me,topo.cluster(me,corretos.inverse().get(src)) - 1);
 
-      // diferenla entre as duas listas, remove todas os processos na árvore do processo de origem
+      // diferença entre as duas listas, remove todas os processos na árvore do processo de origem
       neighbors.removeAll(subtree);
       for (int i: neighbors) {
         TreeSet<Timestamp> re_ts = new TreeSet<>();
@@ -136,9 +236,6 @@ public class BroadcastActor extends AbstractBehavior<Message> {
         addAck(me,i,replay);
       }
     }
-
-
-
 //      Adiciona todos os timestamps de tree recebidos
 //        Verificar se a mensagem já não foi entregue, assim é evitado que seja aguardado a entrega desta mensagem, mesmo já tendo sido marcada
     if (last_i.get(data.getSrc()) < data.getSeq()){
@@ -164,10 +261,9 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     return Behaviors.same();
   }
 
-  private ActorRef<Message> getSelf(){
+  private ActorRef getSelf(){
     return getContext().getSelf();
   }
-
 
   private void receptionistRegisterSubscribe(ActorContext<Message> context) {
     final ActorRef<Receptionist.Listing> listingActorRef = context.messageAdapter(Receptionist.Listing.class, Listeners::new);
@@ -180,74 +276,44 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
   private Behavior<Message> onListeners(Listeners listeners) {
     var instances = listeners.listing.getServiceInstances(serviceKey);
-
-
-    log().info("Cluster aware actors subscribers changed, count {}", instances.size());
-
-//    instances.forEach(actorRef -> log().info("## REF ## {}",actorRef.path().address()));
+    log().debug("Cluster aware actors subscribers changed, count {}", instances.size());
 
     serviceInstances = instances.stream().collect(Collectors.toList());
-    Comparator<ActorRef<Message>> c = (a, b) -> {
-      String addr_a;
-      if (a.equals(getContext().getSelf()))
-        addr_a = getContext().getSystem().address().hostPort();
-      else
-        addr_a = a.path().address().hostPort();
-
-      String addr_b;
-      if (b.equals(getContext().getSelf()))
-        addr_b = getContext().getSystem().address().hostPort();
-      else
-        addr_b = b.path().address().hostPort();
-
-      if (!IPUtils.getIP(addr_a).equals(IPUtils.getIP(addr_b)))
-        return IPUtils.getIP(addr_a).compareTo(IPUtils.getIP(addr_b));
-      else
-        return IPUtils.getPort(addr_a) - IPUtils.getPort(addr_b);
-    };
-
-    serviceInstances.sort(c);
-
+    serviceInstances.sort(new AddressComparator(getContext()));
     if (serviceInstances.size() == NUM_PROCESS && !ready){
       ready = true;
 
       serviceInstances.forEach(new Consumer<>() {
         int i = 0;
-
         @Override
         public void accept(ActorRef<Message> actor) {
 
           if (actor.equals(getContext().getSelf())) {
             me = i;
-
           }
           corretos.put(i, actor);
-
-//          Informa a todos os atores de que está replica está com os nós que deveria
+//          Informa a todos os atores de que está replica está com o número inicial de nós que deveria
           actor.tell(new ClusterInfoMessage(getSelf()));
-
           i++;
         }
       });
-
-
     }
     return Behaviors.same();
   }
 
   private Behavior<Message> callClient(ClusterInfoMessage info){
-
     n_ready.add(info.replyTo);
-
     if (n_ready.size() == NUM_PROCESS){
-      log().info("ALL cluster READY");
+      log().debug("ALL cluster READY");
       clientRef.tell(new ClusterInfoMessage(getSelf()));
     }
-
     return Behaviors.same();
   }
 
   public Behavior<Message> broadcast(ABCast data){
+    if (data.getData().equals("Teste-2"))
+      log().info("iniciando testes");
+
     BroadcastMessage m = new BroadcastMessage(data.getData(),me,lc);
 
     Timestamp timestamp = new Timestamp(me,ts);
@@ -271,19 +337,19 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   public void forward(TreeMessage tree, int size){
     List<Integer> neighbors = topo.neighborhood(me,size);
 
-    log().info("Enviando mensagens a processos remotos");
+    log().debug("Enviando mensagens a processos remotos");
     for (int i: neighbors) {
 
       addAck(tree.getFrom(),i,tree);
 
       send(corretos.get(i),tree);
-      log().info("Enviando tree para "+corretos.get(i));
+      log().debug("Enviando tree para "+corretos.get(i));
     }
 
   }
 
   private void send(ActorRef<Message> dest, Message data){
-    log().info("{}: Enviando {} para {}",
+    log().debug("{}: Enviando {} para {}",
             getContext().getSystem().address().hostPort(),
             data,
             dest.path().address().hostPort());
@@ -291,7 +357,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   }
 
   private Behavior<Message> receiveACk (ACKPending ack){
-    log().info("{}: Recebendo ACK:{} de {}",
+    log().debug("{}: Recebendo ACK:{} de {}",
                 getContext().getSystem().address().hostPort(),
                 ack,
                 ack.replyTo.path().address().hostPort());
@@ -312,7 +378,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     if (tree != null)
       pendingAck.get(tree).remove(src);
 //    else
-//      log().info("PENDING_ACK: {}",pendingAck.toString());
+//      log().debug("PENDING_ACK: {}",pendingAck.toString());
 
 //        Remove pendência chave de pendingAcks
     if (pendingAck.get(tree).size() == 0)

@@ -62,8 +62,9 @@ public class VCubeTopology extends AbstractTopology {
         // procura primeiro elemento no cluster J que seja livre de falhas
         int n = 0;
         do {
-            if (corrects.containsKey(n))
-                return elements.get(n);
+            int e = elements.get(n);
+            if (corrects.containsKey(e))
+                return e;
             n++;
         } while (n < elements.size());
 

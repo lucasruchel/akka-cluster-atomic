@@ -11,6 +11,8 @@ import messages.ClusterInfoMessage;
 import messages.Message;
 import org.slf4j.Logger;
 
+import java.time.Duration;
+
 public class ClientActor extends AbstractBehavior<Message> {
     public ClientActor(ActorContext<Message> context) {
         super(context);
@@ -30,7 +32,7 @@ public class ClientActor extends AbstractBehavior<Message> {
     }
 
     private Behavior<Message> orderedMessage(BroadcastMessage abCast){
-        log().info("{} mensagem entregue: {}",getContext().getSystem().address().hostPort(),
+        log().debug("{} mensagem entregue: {}",getContext().getSystem().address().hostPort(),
                                                abCast.getData());
 
         return Behaviors.same();
@@ -40,8 +42,18 @@ public class ClientActor extends AbstractBehavior<Message> {
 
 //      Inicia o broadcast caso o estado do Cluster esteja OK
         if (info.isReady()){
-           log().info("Pronto para iniciar testes!!");
+           log().debug("Pronto para iniciar testes!!");
            info.replyTo.tell(new ABCast<String>("Teste: "+getContext().getSystem().address().hostPort()));
+
+           if (BroadcastActor.me == 2)
+           getContext().getSystem()
+                   .scheduler()
+                   .scheduleOnce(Duration.ofMinutes(2),
+                           () -> {
+                               info.replyTo.tell(new ABCast<>("Teste-2"));
+                           },
+                           getContext().getExecutionContext()
+                   );
         }
 
         return Behaviors.same();
