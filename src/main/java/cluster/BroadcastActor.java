@@ -8,10 +8,8 @@ import akka.actor.typed.receptionist.Receptionist;
 import akka.actor.typed.receptionist.ServiceKey;
 
 import akka.cluster.ClusterEvent;
-import akka.cluster.Member;
 import akka.cluster.typed.Cluster;
 import akka.cluster.typed.Subscribe;
-import akka.cluster.typed.Subscribe$;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
 import messages.*;
@@ -19,7 +17,6 @@ import data.Timestamp;
 import org.slf4j.Logger;
 import topologia.VCubeTopology;
 import utils.AddressComparator;
-import utils.IPUtils;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -39,10 +36,10 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
   BiMap<Integer, ActorRef<Message>> corretos = HashBiMap.create();
 
-  private ConcurrentMap<BroadcastMessage<String>,Integer> stamped;
-  private ConcurrentMap<BroadcastMessage<String>, TreeSet<Timestamp>> received;
+  private Map<BroadcastMessage<String>,Integer> stamped;
+  private Map<BroadcastMessage<String>, TreeSet<Timestamp>> received;
   //    Mapa do conjunto de timestamps enviados a cada processo e o to, from de cada ACK
-  private ConcurrentMap<TreeMessage<String>, ConcurrentMap<Integer,Integer>> pendingAck;
+  private Map<TreeMessage<String>, Map<Integer,Integer>> pendingAck;
   private List<Integer> last_i;
   //    relógio lógico que identifica unicamente as mensagens enviadas por i
   private int lc;
@@ -73,9 +70,9 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
     this.clientRef = actorRef;
 
-    stamped = new ConcurrentHashMap<>();
-    received = new ConcurrentHashMap<>();
-    pendingAck = new ConcurrentHashMap<>();
+    stamped = new HashMap<>();
+    received = new HashMap<>();
+    pendingAck = new HashMap<>();
 
     n_ready = new HashSet<>(8);
 
@@ -124,7 +121,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     var unreachableMembers = cluster.state().getUnreachable();
 
     unreachableMembers.forEach(member -> {
-      corretos.inverse().forEach((actor, id) -> {
+      corretos.forEach((id, actor) -> {
         if (actor.path().address().equals(member.address())){
           onFailure(id);
         }
@@ -135,7 +132,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
   private void onFailure(int p){
 
-    log().debug("{}: Tratando falha de {}",me,p);
+    log().info("{}: Falha de {}",me,p);
 
 //    Remove processo falho da lista de processos corretos se estiver presente
     if (corretos.containsKey(p)){
@@ -198,15 +195,46 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     received.forEach((abMsg, timestamps) -> checkDeliverable(abMsg));
   }
 
+  private String logReceived(){
+    StringBuilder builder = new StringBuilder();
+
+    received.forEach((m, ts) -> {
+      builder.append("|| (");
+      builder.append(m.getData());
+      builder.append(") -> ");
+      builder.append(Arrays.toString(ts.toArray()));
+    });
+
+    return builder.toString();
+  }
+
+  private String logPendingAck(){
+    StringBuilder builder = new StringBuilder();
+
+    BroadcastMessage<String> data = null;
+    pendingAck.forEach((m, ack) -> {
+
+      if (m.getData().getSrc() == me){
+        builder.append("|| (");
+        builder.append(m);
+
+        builder.append(") -> ");
+        builder.append(ack.toString());
+      }
+
+    });
+
+    return builder.toString();
+  }
+
   private Behavior<Message> receiveTree(TreeMessage tree){
-    log().debug("TREE recebido!!");
+    log().debug("TREE recebido {} - received:{} !!",tree.getData(),logReceived());
 
     ActorRef<Message> src = tree.replyTo;
 
-//        Verifica se processo de origem está suspeito, caso estiver mod2==1, nenhuma ação é tomada
+//        Verifica se processo de origem está suspeito, caso estiver, nenhuma ação é tomada
     if (!corretos.containsValue(src))
       return Behaviors.same();
-
 
     ts = Math.max(ts+1,tree.getMaxTimestamp());
 
@@ -248,15 +276,16 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 //      Encaminha os processos à árvore do processo de origem
     TreeMessage<String> fwd = new TreeMessage<String>(getSelf(), data,corretos.inverse().get(src),tsaggr);
 
-//        Cluster em que processo está
+//  OBtem próximo nível da árvore para envio de mensagens
     int s = topo.cluster(me,corretos.inverse().get(src)) - 1;
     forward(fwd, s);
+
+//      checkDeliverableAll();
     checkDeliverable(data);
 
-    if (s > 0)
-      checkAcks(corretos.inverse().get(src),fwd);
-    else
-      checkAcks(corretos.inverse().get(src),tree);
+    // verifica se existem ACKs pendentes para a mensagem enviada
+    checkAcks(corretos.inverse().get(src),fwd);
+
 
     return Behaviors.same();
   }
@@ -278,25 +307,29 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     var instances = listeners.listing.getServiceInstances(serviceKey);
     log().debug("Cluster aware actors subscribers changed, count {}", instances.size());
 
-    serviceInstances = instances.stream().collect(Collectors.toList());
-    serviceInstances.sort(new AddressComparator(getContext()));
-    if (serviceInstances.size() == NUM_PROCESS && !ready){
-      ready = true;
+    if (!ready){
+      serviceInstances = instances.stream().collect(Collectors.toList());
 
-      serviceInstances.forEach(new Consumer<>() {
-        int i = 0;
-        @Override
-        public void accept(ActorRef<Message> actor) {
+      serviceInstances.sort(new AddressComparator(getContext()));
 
-          if (actor.equals(getContext().getSelf())) {
-            me = i;
+      if (serviceInstances.size() == NUM_PROCESS){
+        ready = true;
+
+        serviceInstances.forEach(new Consumer<>() {
+          int i = 0;
+          @Override
+          public void accept(ActorRef<Message> actor) {
+
+            if (actor.equals(getContext().getSelf())) {
+              me = i;
+            }
+            corretos.put(i, actor);
+  //          Informa a todos os atores de que está replica está com o número inicial de nós que deveria
+            actor.tell(new ClusterInfoMessage(getSelf()));
+            i++;
           }
-          corretos.put(i, actor);
-//          Informa a todos os atores de que está replica está com o número inicial de nós que deveria
-          actor.tell(new ClusterInfoMessage(getSelf()));
-          i++;
-        }
-      });
+        });
+      }
     }
     return Behaviors.same();
   }
@@ -304,15 +337,14 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   private Behavior<Message> callClient(ClusterInfoMessage info){
     n_ready.add(info.replyTo);
     if (n_ready.size() == NUM_PROCESS){
-      log().debug("ALL cluster READY");
+//      log().debug("ALL cluster READY");
       clientRef.tell(new ClusterInfoMessage(getSelf()));
     }
     return Behaviors.same();
   }
 
   public Behavior<Message> broadcast(ABCast data){
-    if (data.getData().equals("Teste-2"))
-      log().info("iniciando testes");
+
 
     BroadcastMessage m = new BroadcastMessage(data.getData(),me,lc);
 
@@ -337,68 +369,75 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   public void forward(TreeMessage tree, int size){
     List<Integer> neighbors = topo.neighborhood(me,size);
 
-    log().debug("Enviando mensagens a processos remotos");
+//    log().debug("Enviando mensagens a processos remotos");
     for (int i: neighbors) {
 
       addAck(tree.getFrom(),i,tree);
 
       send(corretos.get(i),tree);
-      log().debug("Enviando tree para "+corretos.get(i));
+//      log().debug("Enviando tree para "+corretos.get(i));
     }
 
   }
 
   private void send(ActorRef<Message> dest, Message data){
-    log().debug("{}: Enviando {} para {}",
-            getContext().getSystem().address().hostPort(),
-            data,
-            dest.path().address().hostPort());
+//    log().debug("{}: Enviando {} para {}",
+//            getContext().getSystem().address().hostPort(),
+//            data,
+//            dest.path().address().hostPort());
     dest.tell(data);
   }
 
   private Behavior<Message> receiveACk (ACKPending ack){
-    log().debug("{}: Recebendo ACK:{} de {}",
-                getContext().getSystem().address().hostPort(),
-                ack,
-                ack.replyTo.path().address().hostPort());
+    log().debug("Recebendo ACK:({})-({})",
+                ack.getId(),
+                ack.getTsaggr());
 
-    int src = corretos.inverse().get(ack.replyTo);
-
-    TreeMessage<Object> treeAck = ack.getData();
+    int src = ack.getId();
 
     AtomicReference<TreeMessage<String>> fromTree = new AtomicReference<>();
 //        Remove pendencia de ACK de processo j (src)
     pendingAck.forEach((t, acks) -> {
 //      if (t.getData().equals(treeAck.getData()) && t.getTsaggr().equals(treeAck.getTsaggr()))
-      if (t.getTsaggr().equals(treeAck.getTsaggr()))
+      if (t.getTsaggr().equals(ack.getTsaggr()))
         fromTree.set(t);
     });
     TreeMessage<String> tree = fromTree.get();
 
-    if (tree != null)
-      pendingAck.get(tree).remove(src);
-//    else
-//      log().debug("PENDING_ACK: {}",pendingAck.toString());
+    pendingAck.get(tree).remove(src);
 
-//        Remove pendência chave de pendingAcks
-    if (pendingAck.get(tree).size() == 0)
+    if (pendingAck.get(tree).isEmpty()){
       pendingAck.remove(tree);
+    }
+
+    log().debug("PendingACk: {}!",logPendingAck());
+
+    if (tree.getFrom() != me) {
+      checkAcks(tree.getFrom(),tree);
+    }
 
 //        Verifica se é possível entregar mensagem
     checkDeliverable(tree.getData());
-
-    if (tree.getFrom() != me)
-      checkAcks(tree.getFrom(),tree);
+//    checkDeliverableAll();
 
     return Behaviors.same();
   }
+
+//  private void checkDeliverableAll() {
+//    received.forEach((m, ts) -> {
+//        log().debug("DELV Ts - {}", m);
+//
+//      if (ts.size() == corretos.size())
+//        checkDeliverable(m);
+//    });
+//  }
 
   private void checkAcks(int src, TreeMessage<String> data) {
 
     if ((pendingAck.get(data) == null || pendingAck.get(data).isEmpty()) && me != src){
       TreeSet<Timestamp> tsaggr = (TreeSet<Timestamp>) data.getTsaggr();
 
-      AtomicReference<Timestamp> ownTs = new AtomicReference<>();
+      AtomicReference<Timestamp> ownTs = new AtomicReference<>(null);
       tsaggr.forEach(timestamp -> {
         if (timestamp.getId() == me){
           ownTs.set(timestamp);
@@ -407,22 +446,28 @@ public class BroadcastActor extends AbstractBehavior<Message> {
       if (ownTs.get() != null)
         tsaggr.remove(ownTs.get());
 
-      data.setTsaggr(tsaggr);
-
-      ACKPending<Object> ack = new ACKPending<>(getSelf(), data,me);
+      ACKPending<Object> ack = new ACKPending(me, tsaggr);
 
       send(corretos.get(src),ack);
     }
   }
 
-  private void checkDeliverable(BroadcastMessage data){
-    if (received.get(data) == null) // se não possui mensagens em received não pode ser entregue ou já foi marcada
+  private void checkDeliverable(BroadcastMessage<String> data){
+    // se não possui mensagens em received não pode ser entregue ou já foi marcada
+    log().debug("DELIVERY: {}",data);
+    if (received.get(data) == null){
+      log().debug("DELIVERY NULL: {}",data);
       return;
+    }
 
     final AtomicBoolean deliverable = new AtomicBoolean(true);
     pendingAck.forEach((tree, acks) -> {
       if (tree.getData().equals(data) && !acks.isEmpty()){
+
         deliverable.set(false);
+        log().debug("DELIVERY {} - TREE {} ACKs: {}",data,tree,acks);
+
+        return;
       }
     });
 
@@ -436,35 +481,47 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
 //        Verifica se é necessário obter os ts de mais processos
     if ((received.get(data).size() - fault.get()) < topo.getCorrects().size()) {
+      log().debug("DELIVERY {}: CORRETOS {}",data,(received.get(data).size() - fault.get()));
       deliverable.set(false);
+      if (data.getSrc() == me)
+        log().debug("DELV Ts");
     }
 
     if (deliverable.get()){
+      log().debug("DELIVERY: OK {}",data);
 //            Maior ts adicionado ao TreeSet, a ordenação é baseada no valor de cada timestamp
       int sn = received.get(data).last().getTs();
+
+//      Remove TSs da mensagem de received para evitar que sejam computados
+      received.remove(data);
+
       doDeliver(data, sn);
+
+      if (data.getSeq() == last_i.get(data.getSrc())+1){
+        last_i.set(data.getSrc(), data.getSeq());
+      }
+      //      Remove todos as entradas associadas com a mensagem no received
+
     }
   }
 
   private void doDeliver(BroadcastMessage data, int sn) {
 //        Adiciona a mensagem com o timestamp associado
     if (data != null) {
+      log().debug("DELV Stamped - {}",data);
       stamped.put(data, sn);
+      log().debug("ALLSTAMPED :: {}",stamped.toString());
+
     }
+    log().debug("ALLRECEIVED :: {}",received.toString());
+    log().debug("LAST :: {}", Arrays.toString(last_i.toArray()));
 
-    if (data.getSeq() == last_i.get(data.getSrc())+1){
-      last_i.set(data.getSrc(), data.getSeq());
-    }
-
-//      Remove todos as entradas associadas com a mensagem no received
-    received.remove(data);
-
-    ConcurrentMap<BroadcastMessage<String>, Integer> deliverable = new ConcurrentHashMap<>();
+    Map<BroadcastMessage<String>, Integer> deliverable = new HashMap<>();
     stamped.forEach((m_, ts_) -> {
       AtomicBoolean menor = new AtomicBoolean(true);
       received.forEach((m__, ts__) -> {
         if (ts_ > ts__.first().getTs())
-          menor.set(false);
+          menor.getAndSet(false);
       });
 
       if (menor.get()){
@@ -498,7 +555,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     if (pendingAck.get(tree) != null) {
       pendingAck.get(tree).put(to,from);
     } else {
-      ConcurrentMap<Integer,Integer> acks = new ConcurrentHashMap<>();
+      Map<Integer,Integer> acks = new HashMap<>();
       acks.put(to,from);
 
       pendingAck.put(tree, acks);

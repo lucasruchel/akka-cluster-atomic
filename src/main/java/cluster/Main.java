@@ -27,14 +27,8 @@ class Main {
   }
 
   private static void bootstrap(final ActorContext<Void> context) {
-
-
     ActorRef<Message> clientRef = context.spawn(ClientActor.create(), "client");
     ActorRef<Message> abcast = context.spawn(BroadcastActor.create(clientRef), BroadcastActor.class.getSimpleName());
-
-
-//    adiciona listener para "ouvir" alterações no estado dos membros do cluster
-
   }
 
   public static void main(String[] args) {
@@ -55,10 +49,7 @@ class Main {
     return ConfigFactory
         .parseString(String.format("akka.remote.artery.canonical.hostname = \"%s\"%n", hostname)
             + String.format("akka.remote.artery.canonical.port=%s%n", port)
-            + String.format("akka.management.http.hostname = \"%s\"%n", "127.0.0.1")
-            + String.format("akka.management.http.port=%s%n", port.replace("255", "855"))
-            + String.format("akka.management.http.route-providers-read-only = %s%n", "false")
-            + String.format("akka.remote.artery.advanced.tcp.outbound-client-hostname = %s%n", hostname))
+             + String.format("akka.remote.artery.advanced.tcp.outbound-client-hostname = %s%n", hostname))
         .withFallback(config);
   }
 }
