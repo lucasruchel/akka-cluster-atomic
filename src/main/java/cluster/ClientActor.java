@@ -1,5 +1,6 @@
 package cluster;
 
+import akka.actor.typed.ActorRef;
 import akka.actor.typed.Behavior;
 import akka.actor.typed.javadsl.AbstractBehavior;
 import akka.actor.typed.javadsl.ActorContext;
@@ -14,6 +15,10 @@ import org.slf4j.Logger;
 import java.time.Duration;
 
 public class ClientActor extends AbstractBehavior<Message> {
+    private ActorRef replicator;
+    private int seq;
+    private boolean shouldContinue;
+
     public ClientActor(ActorContext<Message> context) {
         super(context);
     }
@@ -32,8 +37,17 @@ public class ClientActor extends AbstractBehavior<Message> {
     }
 
     private Behavior<Message> orderedMessage(BroadcastMessage abCast){
-        log().debug("{} mensagem entregue: {}",getContext().getSystem().address().hostPort(),
-                                               abCast.getData());
+        log().debug("ABCAST:{}",abCast.getData());
+
+        getContext().getSystem().scheduler()
+                .scheduleOnce(Duration.ofSeconds(1),
+                        () -> {
+                            if (shouldContinue && BroadcastActor.me == abCast.getSrc()) {
+                                seq++;
+
+                                replicator.tell(new ABCast<>("p" + BroadcastActor.me + "-seq" + seq + ":" + getContext().getSystem().address().hostPort()));
+                            }
+                        },getContext().getExecutionContext());
 
         return Behaviors.same();
     }
@@ -43,17 +57,11 @@ public class ClientActor extends AbstractBehavior<Message> {
 //      Inicia o broadcast caso o estado do Cluster esteja OK
         if (info.isReady()){
            log().debug("Pronto para iniciar testes!!");
-           info.replyTo.tell(new ABCast<String>("Teste: "+getContext().getSystem().address().hostPort()));
+           replicator = info.replyTo;
+           replicator.tell(new ABCast<>("p"+BroadcastActor.me+"-seq"+seq+":"+getContext().getSystem().address().hostPort()));
+           shouldContinue = true;
 
-           if (BroadcastActor.me == 2)
-           getContext().getSystem()
-                   .scheduler()
-                   .scheduleOnce(Duration.ofMinutes(2),
-                           () -> {
-                               info.replyTo.tell(new ABCast<>("Teste-2"));
-                           },
-                           getContext().getExecutionContext()
-                   );
+           scheduleStop();
         }
 
         return Behaviors.same();
@@ -61,5 +69,13 @@ public class ClientActor extends AbstractBehavior<Message> {
 
     private Logger log() {
         return getContext().getLog();
+    }
+
+    private void scheduleStop(){
+        getContext().getSystem().scheduler()
+                .scheduleOnce(Duration.ofMinutes(5),
+        () -> {
+            shouldContinue = false;
+        }, getContext().getExecutionContext());
     }
 }
