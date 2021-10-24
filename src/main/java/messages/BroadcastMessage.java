@@ -21,6 +21,11 @@ public class BroadcastMessage<D> implements Message {
         this.src = src;
         this.seq = seq;
     }
+    public  BroadcastMessage(BroadcastMessage<D> m){
+        this.data = m.data;
+        this.seq = m.seq;
+        this.src = m.seq;
+    }
 
     public D getData() {
         return data;
