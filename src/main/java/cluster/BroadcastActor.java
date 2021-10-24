@@ -348,7 +348,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
     BroadcastMessage m = new BroadcastMessage(data.getData(),me,lc);
 
-    Timestamp timestamp = new Timestamp(me,ts);
+    Timestamp timestamp = new Timestamp(me,++ts);
 
     lc += 1;
     ts = Math.max(lc,ts);

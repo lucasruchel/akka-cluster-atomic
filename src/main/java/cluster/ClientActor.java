@@ -65,11 +65,8 @@ public class ClientActor extends AbstractBehavior<Message> {
 //      Inicia o broadcast caso o estado do Cluster esteja OK
         if (info.isReady()){
             abCastActor = info.replyTo;
-            createSchedule(Duration.ofMinutes(1),
-                       () -> {
-                           abCastActor.tell(new ABCast<>(String.format("p%s:%s",BroadcastActor.me,++mCounter)));
-                           scheduleStop();
-                       });
+            abCastActor.tell(new ABCast<>(String.format("p%s:%s",BroadcastActor.me,++mCounter)));
+            scheduleStop();
         }
 
         return Behaviors.same();
