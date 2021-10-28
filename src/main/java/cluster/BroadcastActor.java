@@ -12,18 +12,17 @@ import akka.cluster.typed.Cluster;
 import akka.cluster.typed.Subscribe;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
+import jnr.ffi.annotations.In;
 import messages.*;
 import data.Timestamp;
 import org.slf4j.Logger;
+import scala.Int;
 import topologia.VCubeTopology;
 import utils.AddressComparator;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -149,13 +148,15 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
 //    Remove timestamp do processo falho do conjunto de mensagens recebidas que ainda estão aguardando para serem entreegues
     received.forEach((data, timestamps) -> {
-      AtomicReference<Timestamp> atomicTs = new AtomicReference<>();
-      timestamps.forEach(ts -> {
-        if (ts.getId() == p)
-          atomicTs.set(ts);
-      });
-      if (atomicTs.get() != null)
-        timestamps.remove(atomicTs.get());
+      Timestamp falhoTs = null;
+      for (Timestamp ts: timestamps) {
+        if (ts.getId() == p){
+          falhoTs = ts;
+          break;
+        }
+      }
+      if (falhoTs != null)
+        timestamps.remove(falhoTs);
     });
 
     // Verifica para cada mensagem tree propagada, se os processos de destino correspondem ao processo suspeito
@@ -228,7 +229,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   }
 
   private Behavior<Message> receiveTree(TreeMessage tree){
-    log().debug("TREE recebido {} - received:{} !!",tree.getData(),logReceived());
+//    log().debug("TREE recebido {} - received:{} !!",tree.getData(),logReceived());
 
     ActorRef<Message> src = tree.replyTo;
 
@@ -305,7 +306,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
   private Behavior<Message> onListeners(Listeners listeners) {
     var instances = listeners.listing.getServiceInstances(serviceKey);
-    log().debug("Cluster aware actors subscribers changed, count {}", instances.size());
+//    log().debug("Cluster aware actors subscribers changed, count {}", instances.size());
 
     if (!ready){
       serviceInstances = instances.stream().collect(Collectors.toList());
@@ -389,28 +390,28 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   }
 
   private Behavior<Message> receiveACk (ACKPending ack){
-    log().debug("Recebendo ACK:({})-({})",
-                ack.getId(),
-                ack.getTsaggr());
+//    log().debug("Recebendo ACK:({})-({})",
+//                ack.getId(),
+//                ack.getTsaggr());
 
     int src = ack.getId();
 
-    AtomicReference<TreeMessage<String>> fromTree = new AtomicReference<>();
 //        Remove pendencia de ACK de processo j (src)
-    pendingAck.forEach((t, acks) -> {
-//      if (t.getData().equals(treeAck.getData()) && t.getTsaggr().equals(treeAck.getTsaggr()))
-      if (t.getTsaggr().equals(ack.getTsaggr()))
-        fromTree.set(t);
-    });
-    TreeMessage<String> tree = fromTree.get();
-
-    pendingAck.get(tree).remove(src);
+    TreeMessage<String> tree = null;
+    for (Map.Entry<TreeMessage<String>,Map<Integer,Integer>> tupla: pendingAck.entrySet()) {
+      if (tupla.getKey().getTsaggr().equals(ack.getTsaggr())){
+        tree = tupla.getKey();
+        break;
+      }
+    }
+    if (tree != null)
+      pendingAck.get(tree).remove(src);
 
     if (pendingAck.get(tree).isEmpty()){
       pendingAck.remove(tree);
     }
 
-    log().debug("PendingACk: {}!",logPendingAck());
+//    log().debug("PendingACk: {}!",logPendingAck());
 
     if (tree.getFrom() != me) {
       checkAcks(tree.getFrom(),tree);
@@ -423,28 +424,21 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     return Behaviors.same();
   }
 
-//  private void checkDeliverableAll() {
-//    received.forEach((m, ts) -> {
-//        log().debug("DELV Ts - {}", m);
-//
-//      if (ts.size() == corretos.size())
-//        checkDeliverable(m);
-//    });
-//  }
 
   private void checkAcks(int src, TreeMessage<String> data) {
 
     if ((pendingAck.get(data) == null || pendingAck.get(data).isEmpty()) && me != src){
       TreeSet<Timestamp> tsaggr = (TreeSet<Timestamp>) data.getTsaggr();
 
-      AtomicReference<Timestamp> ownTs = new AtomicReference<>(null);
-      tsaggr.forEach(timestamp -> {
-        if (timestamp.getId() == me){
-          ownTs.set(timestamp);
+      Timestamp meTs = null;
+      for (Timestamp ts: tsaggr) {
+        if (ts.getId() == me){
+          meTs = ts;
+          break;
         }
-      });
-      if (ownTs.get() != null)
-        tsaggr.remove(ownTs.get());
+      }
+      if (meTs != null)
+        tsaggr.remove(meTs);
 
       ACKPending<Object> ack = new ACKPending(me, tsaggr);
 
@@ -454,41 +448,29 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
   private void checkDeliverable(BroadcastMessage<String> data){
     // se não possui mensagens em received não pode ser entregue ou já foi marcada
-    log().debug("DELIVERY: {}",data);
+//    log().debug("DELIVERY: {}",data);
     if (received.get(data) == null){
-      log().debug("DELIVERY NULL: {}",data);
+//      log().debug("DELIVERY NULL: {}",data);
       return;
     }
 
-    final AtomicBoolean deliverable = new AtomicBoolean(true);
-    pendingAck.forEach((tree, acks) -> {
-      if (tree.getData().equals(data) && !acks.isEmpty()){
-
-        deliverable.set(false);
-        log().debug("DELIVERY {} - TREE {} ACKs: {}",data,tree,acks);
-
+//    Verifica se existe algum TREE contendo os dados em "data" que esteja pendente
+    for (TreeMessage<String> tree: pendingAck.keySet()) {
+      if (tree.getData().equals(data)){
         return;
       }
-    });
-
-//       Verifica quantos processos suspeitos enviaram os seus timestamps
-    AtomicInteger fault = new AtomicInteger(0);
-    received.get(data).forEach(timestamp -> {
-      if (!corretos.containsKey(timestamp.getId())){
-        fault.incrementAndGet();
-      }
-    });
-
-//        Verifica se é necessário obter os ts de mais processos
-    if ((received.get(data).size() - fault.get()) < topo.getCorrects().size()) {
-      log().debug("DELIVERY {}: CORRETOS {}",data,(received.get(data).size() - fault.get()));
-      deliverable.set(false);
-      if (data.getSrc() == me)
-        log().debug("DELV Ts");
     }
 
-    if (deliverable.get()){
-      log().debug("DELIVERY: OK {}",data);
+//       Verifica quantos processos suspeitos enviaram os seus timestamps
+    int fault = 0;
+    for (Timestamp ts: received.get(data)) {
+      if (!corretos.containsKey(ts.getId()))
+        fault++;
+    }
+    
+    boolean deliverable = !((received.get(data).size() - fault) < topo.getCorrects().size());
+    if (deliverable){
+//      log().debug("DELIVERY: OK {}",data);
 //            Maior ts adicionado ao TreeSet, a ordenação é baseada no valor de cada timestamp
       int sn = received.get(data).last().getTs();
 
@@ -508,23 +490,26 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   private void doDeliver(BroadcastMessage data, int sn) {
 //        Adiciona a mensagem com o timestamp associado
     if (data != null) {
-      log().debug("DELV Stamped - {}",data);
+//      log().debug("DELV Stamped - {}",data);
       stamped.put(data, sn);
-      log().debug("ALLSTAMPED :: {}",stamped.toString());
+//      log().debug("ALLSTAMPED :: {}",stamped.toString());
 
     }
-    log().debug("ALLRECEIVED :: {}",received.toString());
-    log().debug("LAST :: {}", Arrays.toString(last_i.toArray()));
+//    log().debug("ALLRECEIVED :: {}",received.toString());
+//    log().debug("LAST :: {}", Arrays.toString(last_i.toArray()));
 
     Map<BroadcastMessage<String>, Integer> deliverable = new HashMap<>();
     stamped.forEach((m_, ts_) -> {
-      AtomicBoolean menor = new AtomicBoolean(true);
-      received.forEach((m__, ts__) -> {
-        if (ts_ > ts__.first().getTs())
-          menor.getAndSet(false);
-      });
+//      AtomicBoolean menor = new AtomicBoolean(true);
+      boolean menor = true;
+      for (Map.Entry<BroadcastMessage<String>,TreeSet<Timestamp>> tupla: received.entrySet()) {
+        if (ts_ > tupla.getValue().first().getTs()){
+          menor = false;
+          break;
+        }
+      }
 
-      if (menor.get()){
+      if (menor){
         deliverable.put(m_, ts_);
       }
     });

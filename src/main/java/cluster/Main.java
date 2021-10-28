@@ -11,14 +11,15 @@ import akka.actor.typed.Behavior;
 import akka.actor.typed.Terminated;
 import akka.actor.typed.javadsl.ActorContext;
 import akka.actor.typed.javadsl.Behaviors;
+import jnr.ffi.annotations.In;
 import messages.Message;
 
 class Main {
 
 
-  static Behavior<Void> create() {
+  static Behavior<Void> create(int reqPerClient) {
     return Behaviors.setup(context -> {
-      bootstrap(context);
+      bootstrap(context, reqPerClient);
 
       return Behaviors.receive(Void.class)
         .onSignal(Terminated.class, signal -> Behaviors.stopped())
@@ -26,8 +27,8 @@ class Main {
     });
   }
 
-  private static void bootstrap(final ActorContext<Void> context) {
-    ActorRef<Message> clientRef = context.spawn(ClientActor.create(), "client");
+  private static void bootstrap(final ActorContext<Void> context, int reqPerClient) {
+    ActorRef<Message> clientRef = context.spawn(ClientActor.create(reqPerClient), "client");
     ActorRef<Message> abcast = context.spawn(BroadcastActor.create(clientRef), BroadcastActor.class.getSimpleName());
   }
 
@@ -35,17 +36,16 @@ class Main {
     if (args.length == 0) {
       throw new RuntimeException("Akka node port and ID is required.");
     }
-    final var port = Arrays.asList(args).get(0);
-    final var actorSystem = ActorSystem.create(cluster.Main.create(), "cluster", setupClusterNodeConfig(port));
+    final var port = Arrays.asList(args).get(1);
+    final var id = Arrays.asList(args).get(0);
+    final var requests = Integer.parseInt(Arrays.asList(args).get(2));
+    final var actorSystem = ActorSystem.create(cluster.Main.create(requests), "cluster", setupClusterNodeConfig(id,port));
   }
 
-  private static Config setupClusterNodeConfig(String port) {
+  private static Config setupClusterNodeConfig(String id, String port) {
     final var config = ConfigFactory.load();
-    final var useLocalhost2 = config.getBoolean("useLocalhost2");
 
-    final var localhost1 = "127.0.0.1";
-    final var localhost2 = "127.0.0.2";
-    final var hostname = useLocalhost2 && port.compareTo("2555") > 0 ? localhost2 : localhost1;
+    final var hostname = id;
     return ConfigFactory
         .parseString(String.format("akka.remote.artery.canonical.hostname = \"%s\"%n", hostname)
             + String.format("akka.remote.artery.canonical.port=%s%n", port)

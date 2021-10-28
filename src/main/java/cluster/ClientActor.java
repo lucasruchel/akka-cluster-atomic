@@ -13,23 +13,35 @@ import messages.Message;
 import org.slf4j.Logger;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 public class ClientActor extends AbstractBehavior<Message> {
     private boolean shouldStop;
     private int mCounter;
     private ActorRef abCastActor;
+    private int reqPerClient;
+    private List<String> bData;
 
-    public ClientActor(ActorContext<Message> context) {
+    public ClientActor(ActorContext<Message> context, int reqPerClient) {
         super(context);
 
         this.shouldStop = false;
         mCounter = 0;
         abCastActor = null;
+        this.reqPerClient = reqPerClient;
+
+//        Tamanho inicial dos array que vai ser criado
+        this.bData = new ArrayList<>(reqPerClient);
+        for (int i = 0; i < reqPerClient; i++) {
+            bData.add(null);
+        }
+
     }
 
-    static Behavior<Message> create() {
+    static Behavior<Message> create(int reqPerClient) {
         return Behaviors.setup(context ->
-                new ClientActor(context));
+                new ClientActor(context, reqPerClient));
     }
 
 
@@ -45,8 +57,15 @@ public class ClientActor extends AbstractBehavior<Message> {
         log().info("ABCast:{}", abCast.getData());
 
         if (abCastActor != null && BroadcastActor.me == abCast.getSrc() && !shouldStop) {
-            createSchedule(Duration.ofSeconds(1),
-                    () -> abCastActor.tell(new ABCast<String>(String.format("p%s:%s",BroadcastActor.me,++mCounter))));
+            for (int i = 0; i < reqPerClient; i++) {
+                if (bData.get(i).equals(abCast.getData())){
+                    String data = String.format("p%s:-c%s:%s",BroadcastActor.me, i,++mCounter);
+                    bData.set(i,data);
+
+                    abCastActor.tell(new ABCast<>(data));
+                    break;
+                }
+            }
 
         }
 
@@ -65,7 +84,12 @@ public class ClientActor extends AbstractBehavior<Message> {
 //      Inicia o broadcast caso o estado do Cluster esteja OK
         if (info.isReady()){
             abCastActor = info.replyTo;
-            abCastActor.tell(new ABCast<>(String.format("p%s:%s",BroadcastActor.me,++mCounter)));
+            for (int i = 0; i < reqPerClient; i++) {
+                String data = String.format("p%s:-c%s:%s",BroadcastActor.me, i,++mCounter);
+                bData.set(i,data);
+
+                abCastActor.tell(new ABCast<>(data));
+            }
             scheduleStop();
         }
 
