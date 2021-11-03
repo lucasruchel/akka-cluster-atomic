@@ -30,7 +30,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   private List<ActorRef<Message>> serviceInstances;
 
 
-  private static int NUM_PROCESS = 8;
+  public static final int NUM_PROCESS = 8;
   private boolean ready = false;
 
   BiMap<Integer, ActorRef<Message>> corretos = HashBiMap.create();
@@ -47,27 +47,26 @@ public class BroadcastActor extends AbstractBehavior<Message> {
 
   private Cluster cluster;
 
-
   private VCubeTopology topo;
 
   static final ServiceKey<Message> serviceKey = ServiceKey.create(Message.class, BroadcastActor.class.getSimpleName());
   public static int me;
 
+  private List<ActorRef> clients;
+
 //  Controla a quantidade de replicas prontas para iniciar a replicação
   private Set<ActorRef> n_ready;
 
-  private ActorRef<Message> clientRef;
 
-
-  static Behavior<Message> create(ActorRef<Message> actorRef) {
-    return Behaviors.setup(context -> new BroadcastActor(context, actorRef));
+  static Behavior<Message> create() {
+    return Behaviors.setup(context -> new BroadcastActor(context));
   }
 
 
-  private BroadcastActor(ActorContext<Message> context, ActorRef<Message> actorRef) {
+  private BroadcastActor(ActorContext<Message> context) {
     super(context);
 
-    this.clientRef = actorRef;
+    clients = new ArrayList<>();
 
     stamped = new HashMap<>();
     received = new HashMap<>();
@@ -105,14 +104,22 @@ public class BroadcastActor extends AbstractBehavior<Message> {
         .onMessage(Listeners.class, this::onListeners)
         .onMessage(ABCast.class, this::broadcast)
         .onMessage(TreeMessage.class, this::receiveTree)
-        .onMessage(ClusterInfoMessage.class, this::callClient)
+        .onMessage(RequestRegister.class, this::addClient)
         .onMessage(ACKPending.class, this::receiveACk)
         .onMessage(ReachabilityChanged.class, this::statusChange)
         .build();
   }
 
-  private void notifyFailure(){
+  private Behavior<Message> addClient(RequestRegister m) {
+    if (clients != null){
+      log().info("Adicionando Cliente:{}",m.client.path().toString());
+      clients.add(m.client);
 
+      m.client.tell(new ReplyRegister(true));
+    }
+
+
+    return Behaviors.same();
   }
 
   private Behavior<Message> statusChange(ReachabilityChanged event){
@@ -335,18 +342,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
     return Behaviors.same();
   }
 
-  private Behavior<Message> callClient(ClusterInfoMessage info){
-    n_ready.add(info.replyTo);
-    if (n_ready.size() == NUM_PROCESS){
-//      log().debug("ALL cluster READY");
-      clientRef.tell(new ClusterInfoMessage(getSelf()));
-    }
-    return Behaviors.same();
-  }
-
   public Behavior<Message> broadcast(ABCast data){
-
-
     BroadcastMessage m = new BroadcastMessage(data.getData(),me,lc);
 
     Timestamp timestamp = new Timestamp(me,++ts);
@@ -548,7 +544,9 @@ public class BroadcastActor extends AbstractBehavior<Message> {
   }
 
   protected void publish(BroadcastMessage<String> data){
-      clientRef.tell(data);
+    for (ActorRef actor: clients) {
+      actor.tell(data);
+    }
   }
 
   private Logger log() {

@@ -35,8 +35,15 @@ startNode() {
 
   DEBUG="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:500$node"
 
+  if [ $node -eq 9 ]; then
+	role="client"
+  else
+	role="replicator"
+  fi	
 
-  java $DEBUG -jar "$jarFilename" "$port" "$1"  &> /tmp/"$scriptFilename"-"$node".log &
+
+
+  java $DEBUG -jar "$jarFilename" "$port" "$role"  &> /tmp/"$scriptFilename"-"$node".log &
 }
 
 [ $# -eq 0 ] && usage

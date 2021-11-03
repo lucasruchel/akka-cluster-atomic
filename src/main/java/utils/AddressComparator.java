@@ -18,13 +18,13 @@ public class AddressComparator implements Comparator<ActorRef<Message>> {
     @Override
     public int compare(ActorRef<Message> a, ActorRef<Message> b) {
         String addr_a;
-        if (a.equals(context.getSelf()))
+        if (a.path().address().equals(context.getSelf().path().address()))
             addr_a = context.getSystem().address().hostPort();
         else
             addr_a = a.path().address().hostPort();
 
         String addr_b;
-        if (b.equals(context.getSelf()))
+        if (b.path().address().equals(context.getSelf().path().address()))
             addr_b = context.getSystem().address().hostPort();
         else
             addr_b = b.path().address().hostPort();

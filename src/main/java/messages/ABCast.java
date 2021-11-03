@@ -1,5 +1,7 @@
 package messages;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+
 import java.io.Serializable;
 
 public class ABCast<D> implements Message {
@@ -8,6 +10,7 @@ public class ABCast<D> implements Message {
 
     D data;
 
+    @JsonCreator
     public ABCast(D data) {
         this.data = data;
     }
