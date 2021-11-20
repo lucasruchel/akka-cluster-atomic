@@ -32,8 +32,7 @@ startNode() {
   export akka_management_http_port="855"$node
   echo "Start node $1 on port $port, management port $akka_management_http_port, HTTP port 955$node"
 
-
-  DEBUG="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:500$node"
+#  DEBUG="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:500$node"
 
   if [ $node -eq 9 ]; then
 	role="client"

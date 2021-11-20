@@ -8,10 +8,8 @@ import akka.actor.typed.javadsl.Behaviors;
 import akka.actor.typed.javadsl.Receive;
 import akka.actor.typed.receptionist.Receptionist;
 import akka.actor.typed.receptionist.ServiceKey;
-import messages.ABCast;
-import messages.BroadcastMessage;
-import messages.ClusterInfoMessage;
-import messages.Message;
+import akka.cluster.typed.Cluster;
+import messages.*;
 import org.slf4j.Logger;
 import utils.AddressComparator;
 
@@ -21,6 +19,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 public class ClientActor extends AbstractBehavior<Message> {
+    private final Cluster cluster;
+    private final Logger log;
     private boolean shouldStop;
     private int mCounter;
     private ActorRef abCastActor;
@@ -29,6 +29,7 @@ public class ClientActor extends AbstractBehavior<Message> {
     private ActorRef<Message> replicatorInstance;
 
     static final ServiceKey<Message> replicatorServiceKey = ServiceKey.create(Message.class, BroadcastActor.class.getSimpleName());
+    private List<ActorRef<Message>> serviceInstances;
 
     public ClientActor(ActorContext<Message> context, int id) {
         super(context);
@@ -42,7 +43,18 @@ public class ClientActor extends AbstractBehavior<Message> {
         this.bData = null;
         this.replicatorInstance = null;
 
+        log = getContext().getLog();
+
+        //    Inicializa detector de falhas
+        getContext().spawn(ClusterEventListener.create(getSelf()),"failure-listener");
+
+        cluster = Cluster.get(getContext().getSystem());
+
         receptionistSubscribe(context);
+    }
+
+    private ActorRef getSelf() {
+        return getContext().getSelf();
     }
 
     static Behavior<Message> create(int id) {
@@ -63,7 +75,28 @@ public class ClientActor extends AbstractBehavior<Message> {
                 .onMessage(BroadcastMessage.class, this::orderedMessage)
                 .onMessage(ReplyRegister.class, this::registred)
                 .onMessage(Listeners.class, this::onListeners)
+                .onMessage(ReachabilityChanged.class, this::statusChange)
                 .build();
+    }
+
+    private Behavior<Message> statusChange(ReachabilityChanged m) {
+        cluster.state().getUnreachable().forEach(member -> {
+            log.debug("{}: Falha de {}",id, member );
+            if (member.address().equals(replicatorInstance.path().address())){
+//                Remove replicador falho
+                serviceInstances.remove(replicatorInstance);
+
+                // obtém o proximo replicador das instâncias do serviço que estão ativas
+                replicatorInstance = serviceInstances.get(id % serviceInstances.size());
+
+//              Se o número de instancias for igual ao número de replicas de
+//              replicação envia uma mensagem a um dos processos do VCube para registrar o cliente
+                replicatorInstance.tell(new RequestRegister(getContext().getSelf()));
+            }
+        });
+
+
+       return Behaviors.same();
     }
 
     private Behavior<Message> registred(ReplyRegister m) {
@@ -110,7 +143,7 @@ public class ClientActor extends AbstractBehavior<Message> {
 
         var np = BroadcastActor.NUM_PROCESS;
         if (instances.size() == np){
-            List<ActorRef<Message>> serviceInstances = instances.stream().collect(Collectors.toList());
+            serviceInstances = instances.stream().collect(Collectors.toList());
 
             log().debug("Client {} - replicator instances {}",getContext().getSelf().path(), serviceInstances.size());
             serviceInstances.sort(new AddressComparator(getContext()));

@@ -166,10 +166,15 @@ public class BroadcastActor extends AbstractBehavior<Message> {
         timestamps.remove(falhoTs);
     });
 
+    Set<TreeMessage<String>> toRemoveTree = new HashSet<>();
+
     // Verifica para cada mensagem tree propagada, se os processos de destino correspondem ao processo suspeito
     pendingAck.forEach((tree, acks) -> {
-      acks.forEach((dest, src) -> {
-        if (dest == p && corretos.containsKey(src)){ // Se houver um ack do processo suspeito e o processo de origem estiver correto
+      if (acks.containsKey(p)) {
+        int dest = p;
+        int src = acks.get(p);
+
+        if (corretos.containsKey(src)){ // Se houver um ack do processo suspeito e o processo de origem estiver correto
           int nextNeighboor = topo.ff_neighboor(me,topo.cluster(me,p));
           if (nextNeighboor != -1) { // verifica se existem processos na árvore
 
@@ -181,7 +186,7 @@ public class BroadcastActor extends AbstractBehavior<Message> {
           }
           acks.remove(dest,src);
           checkAcks(src,tree);
-        } else if ( dest == p){
+        } else {
           acks.remove(dest,src);
 
           int nextNeighboor = topo.ff_neighboor(me,topo.cluster(me,p));
@@ -193,14 +198,20 @@ public class BroadcastActor extends AbstractBehavior<Message> {
             send(corretos.get(nextNeighboor), tree);
           }
         }
-      });
-//                 limpa entradas vazias em pendingAcks
+      }
+//                 marca para remoção entradas vazias em pendingAcks
       if (acks.isEmpty()) {
-        pendingAck.remove(tree,acks);
+        toRemoveTree.add(tree);
       }
     });
+
+//    Remove TREEs sem ACKs
+    toRemoveTree.forEach(tree -> pendingAck.remove(tree));
+
 //          Verifica se mensagens podem ser entregues, independente se houver ACks pendentes
-    received.forEach((abMsg, timestamps) -> checkDeliverable(abMsg));
+    var receivedTREEs = new HashSet<>(received.keySet());
+    receivedTREEs.forEach(abMsg -> checkDeliverable(abMsg));
+
   }
 
   private String logReceived(){
