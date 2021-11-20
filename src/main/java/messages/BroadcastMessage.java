@@ -56,12 +56,12 @@ public class BroadcastMessage<D> implements Message {
         if (this == o) return true;
         if (!(o instanceof BroadcastMessage)) return false;
         BroadcastMessage<?> that = (BroadcastMessage<?>) o;
-        return src == that.src && seq == that.seq && Objects.equals(data, that.data);
+        return src == that.src && seq == that.seq && data.equals(that.data);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(data, src, seq);
+        return Objects.hash(src, seq, data);
     }
 
     @Override

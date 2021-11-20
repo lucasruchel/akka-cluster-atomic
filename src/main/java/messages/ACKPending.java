@@ -1,31 +1,31 @@
 package messages;
 
 import akka.actor.typed.ActorRef;
+import data.Timestamp;
 
 import java.io.Serializable;
 import java.util.Objects;
+import java.util.Set;
+import java.util.TreeSet;
 
-public class ACKPending<D> implements Comparable<ACKPending>, Message {
+public class ACKPending<D> implements Message {
     private static final long serialVersionUID = 4L;
 
 
-    public ActorRef<Message> replyTo;
-    private TreeMessage<D> data;
+    private Set<Timestamp> tsaggr;
     private int id;
-    private int from;
 
-    public ACKPending(ActorRef<Message> replyTo, TreeMessage data, int id) {
-        this.replyTo = replyTo;
-        this.data = data;
+    public ACKPending(int id, Set<Timestamp> tsaggr) {
+        this.tsaggr = tsaggr;
         this.id = id;
     }
 
-    public TreeMessage<D> getData() {
-        return data;
+    public Set<Timestamp> getTsaggr() {
+        return tsaggr;
     }
 
-    public void setData(TreeMessage<D> data) {
-        this.data = data;
+    public void setTsaggr(Set<Timestamp> tsaggr) {
+        this.tsaggr = tsaggr;
     }
 
     public int getId() {
@@ -37,36 +37,26 @@ public class ACKPending<D> implements Comparable<ACKPending>, Message {
     }
 
 
-
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof ACKPending)) return false;
         ACKPending<?> that = (ACKPending<?>) o;
-        return id == that.id && data.equals(that.data);
+        return id == that.id && tsaggr.equals(that.tsaggr);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(data, id);
-    }
-
-
-
-    @Override
-    public int compareTo(ACKPending o) {
-        if (!data.equals(o.getData()))
-            return data.hashCode() - o.getData().hashCode();
-        else
-            return this.id - o.id;
+        return Objects.hash(tsaggr, id);
     }
 
     @Override
     public String toString() {
                return "ack-reply{" +
-                "data=" + data +
+                "data=" + tsaggr +
                 ", id=" + id +
                 '}';
 
     }
+
 }
